@@ -9,7 +9,7 @@ use core::ptr;
 use core::sync::atomic;
 use core::sync::atomic::Ordering;
 
-use crate::dma::{self, dma1, dma2, TransferPayload};
+use crate::dma::{self, dma1, TransferPayload};
 use crate::gpio::{Alternate, Floating, Input, AF5};
 use crate::hal::spi::{FullDuplex, Mode, Phase, Polarity};
 use crate::rcc::{Clocks, APB1R1, APB2};

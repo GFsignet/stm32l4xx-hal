@@ -52,6 +52,14 @@ pub enum Error {
     Parity,
 }
 
+/// Word length settings
+pub enum WordLength {
+    /// Seven-bit word (excluding parity bit)
+    Bits7,
+    /// Eight-bit word (excluding parity bit)
+    Bits8,
+}
+
 /// USART parity settings
 pub enum Parity {
     /// No parity
@@ -85,6 +93,7 @@ pub enum Oversampling {
 /// USART Configuration structure
 pub struct Config {
     baudrate: Bps,
+    word_length: WordLength,
     parity: Parity,
     stopbits: StopBits,
     oversampling: Oversampling,
@@ -98,6 +107,18 @@ impl Config {
     /// Set the baudrate to a specific value
     pub fn baudrate(mut self, baudrate: Bps) -> Self {
         self.baudrate = baudrate;
+        self
+    }
+
+    /// Set word length to 7 bits (excluding parity)
+    pub fn word_length_7(mut self) -> Self {
+        self.word_length = WordLength::Bits7;
+        self
+    }
+
+    /// Set word length to 8 bits (excluding parity)
+    pub fn word_length_8(mut self) -> Self {
+        self.word_length = WordLength::Bits8;
         self
     }
 
@@ -164,6 +185,7 @@ impl Default for Config {
         let baudrate = 115_200_u32.bps();
         Config {
             baudrate,
+            word_length: WordLength::Bits8,
             parity: Parity::ParityNone,
             stopbits: StopBits::STOP1,
             oversampling: Oversampling::Over16,
@@ -298,19 +320,42 @@ macro_rules! hal {
                         w
                     });
 
+                    enum WordLengthSelect {
+                      Bits8,
+                      Bits9,
+                      Bits7,
+                    }
+
                     // Configure parity and word length
                     // Unlike most uart devices, the "word length" of this usart device refers to
                     // the size of the data plus the parity bit. I.e. "word length"=8, parity=even
                     // results in 7 bits of data. Therefore, in order to get 8 bits and one parity
                     // bit, we need to set the "word" length to 9 when using parity bits.
-                    let (word_length, parity_control_enable, parity) = match config.parity {
-                        Parity::ParityNone => (false, false, false),
-                        Parity::ParityEven => (true, true, false),
-                        Parity::ParityOdd => (true, true, true),
+                    let (word_length_select, parity) = match (&config.word_length, &config.parity) {
+                        (WordLength::Bits8, Parity::ParityNone) => (WordLengthSelect::Bits8, false),
+                        (WordLength::Bits8, Parity::ParityEven) => (WordLengthSelect::Bits9, false),
+                        (WordLength::Bits8, Parity::ParityOdd) => (WordLengthSelect::Bits9, true),
+                        (WordLength::Bits7, Parity::ParityNone) => (WordLengthSelect::Bits7, false),
+                        (WordLength::Bits7, Parity::ParityEven) => (WordLengthSelect::Bits8, false),
+                        (WordLength::Bits7, Parity::ParityOdd) => (WordLengthSelect::Bits8, true),
                     };
+
+                    let parity_control_enable = match &config.parity {
+                      Parity::ParityNone => false,
+                      Parity::ParityEven => true,
+                      Parity::ParityOdd => true,
+                    };
+
+                    let (m1, m0) = match word_length_select {
+                      WordLengthSelect::Bits8 => (false, false),
+                      WordLengthSelect::Bits9 => (false, true),
+                      WordLengthSelect::Bits7 => (true, false),
+                    };
+
                     usart.cr1.modify(|_r, w| {
                         w
-                            .m0().bit(word_length)
+                            .m1().bit(m1)
+                            .m0().bit(m0)
                             .ps().bit(parity)
                             .pce().bit(parity_control_enable)
                     });
