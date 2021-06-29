@@ -103,6 +103,12 @@ pub struct Config {
     onebit_sampling: bool,
 }
 
+enum WordLengthIncludingParity {
+    Bits8,
+    Bits9,
+    Bits7,
+}
+
 impl Config {
     /// Set the baudrate to a specific value
     pub fn baudrate(mut self, baudrate: Bps) -> Self {
@@ -320,36 +326,29 @@ macro_rules! hal {
                         w
                     });
 
-                    enum WordLengthSelect {
-                      Bits8,
-                      Bits9,
-                      Bits7,
-                    }
 
                     // Configure parity and word length
                     // Unlike most uart devices, the "word length" of this usart device refers to
                     // the size of the data plus the parity bit. I.e. "word length"=8, parity=even
                     // results in 7 bits of data. Therefore, in order to get 8 bits and one parity
                     // bit, we need to set the "word" length to 9 when using parity bits.
-                    let (word_length_select, parity) = match (&config.word_length, &config.parity) {
-                        (WordLength::Bits8, Parity::ParityNone) => (WordLengthSelect::Bits8, false),
-                        (WordLength::Bits8, Parity::ParityEven) => (WordLengthSelect::Bits9, false),
-                        (WordLength::Bits8, Parity::ParityOdd) => (WordLengthSelect::Bits9, true),
-                        (WordLength::Bits7, Parity::ParityNone) => (WordLengthSelect::Bits7, false),
-                        (WordLength::Bits7, Parity::ParityEven) => (WordLengthSelect::Bits8, false),
-                        (WordLength::Bits7, Parity::ParityOdd) => (WordLengthSelect::Bits8, true),
+                    let (parity_control_enable, parity) = match &config.parity {
+                      Parity::ParityNone => (false, false),
+                      Parity::ParityEven => (true, false),
+                      Parity::ParityOdd => (true, true),
                     };
 
-                    let parity_control_enable = match &config.parity {
-                      Parity::ParityNone => false,
-                      Parity::ParityEven => true,
-                      Parity::ParityOdd => true,
+                    let word_length_select = match (&config.word_length, parity_control_enable) {
+                        (WordLength::Bits8, false) => WordLengthIncludingParity::Bits8,
+                        (WordLength::Bits8, true) => WordLengthIncludingParity::Bits9,
+                        (WordLength::Bits7, false) => WordLengthIncludingParity::Bits7,
+                        (WordLength::Bits7, true) => WordLengthIncludingParity::Bits8,
                     };
 
                     let (m1, m0) = match word_length_select {
-                      WordLengthSelect::Bits8 => (false, false),
-                      WordLengthSelect::Bits9 => (false, true),
-                      WordLengthSelect::Bits7 => (true, false),
+                      WordLengthIncludingParity::Bits8 => (false, false),
+                      WordLengthIncludingParity::Bits9 => (false, true),
+                      WordLengthIncludingParity::Bits7 => (true, false),
                     };
 
                     usart.cr1.modify(|_r, w| {
@@ -483,11 +482,40 @@ macro_rules! hal {
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
+                    // When receiving with parity enabled, MSB is the parity bit.
+                    // Mask it out.
+                    let cr1 = unsafe { (*pac::$USARTX::ptr()).cr1.read() };
+                    let (m1, m0) = (cr1.m1().bits(), cr1.m0().bits());
+
+                    let word_length_select = match (m1, m0) {
+                      (false, false) => WordLengthIncludingParity::Bits8,
+                      (false, true) => WordLengthIncludingParity::Bits9,
+                      (true, false) => WordLengthIncludingParity::Bits7,
+                      (true, true) => unreachable!(),
+                    };
+
+                    let parity_control_enable = cr1.pce().bits();
+                    let word_length = if parity_control_enable {
+                      match word_length_select {
+                        WordLengthIncludingParity::Bits9 => WordLength::Bits8,
+                        WordLengthIncludingParity::Bits8 => WordLength::Bits7,
+                        WordLengthIncludingParity::Bits7 => unimplemented!("6-bit word length is unsupported"),
+                      }
+                    } else {
+                      WordLength::Bits8
+                    };
+
+                    let parity_shift: u32 = match word_length {
+                      WordLength::Bits8 => 8,
+                      WordLength::Bits7 => 7,
+                    };
+
+                    let mask = ((1 << parity_shift) - 1) as u8;
+
                     if isr.rxne().bit_is_set() {
+                        let rdr : u8 = unsafe { ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)};
                         // NOTE(read_volatile) see `write_volatile` below
-                        return Ok(unsafe {
-                            ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)
-                        });
+                        return Ok(rdr & mask);
                     }
 
                     Err(nb::Error::WouldBlock)
