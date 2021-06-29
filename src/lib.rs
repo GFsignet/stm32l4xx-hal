@@ -8,6 +8,7 @@
 //! well-documented). However! At this time, actual testing has only been performed for
 //! the STM32L432KC microcontroller. Participation is of course very welcome!
 
+#![allow(clippy::all)]
 #![no_std]
 
 #[cfg(not(any(

@@ -212,6 +212,7 @@ pub struct Serial<USART, PINS> {
 /// Serial receiver
 pub struct Rx<USART> {
     _usart: PhantomData<USART>,
+    word_length: WordLength,
 }
 
 /// Serial transmitter
@@ -417,9 +418,7 @@ macro_rules! hal {
                 ///
                 /// See [`Rx::check_for_error`].
                 pub fn check_for_error() -> Result<(), Error> {
-                    let mut rx: Rx<pac::$USARTX> = Rx {
-                        _usart: PhantomData,
-                    };
+                    let mut rx = Rx::<pac::$USARTX>::new();
                     rx.check_for_error()
                 }
 
@@ -447,12 +446,8 @@ macro_rules! hal {
                 /// Splits the `Serial` abstraction into a transmitter and a receiver half
                 pub fn split(self) -> (Tx<pac::$USARTX>, Rx<pac::$USARTX>) {
                     (
-                        Tx {
-                            _usart: PhantomData,
-                        },
-                        Rx {
-                            _usart: PhantomData,
-                        },
+                        Tx::<pac::$USARTX>::new(),
+                        Rx::<pac::$USARTX>::new(),
                     )
                 }
 
@@ -466,9 +461,7 @@ macro_rules! hal {
                 type Error = Error;
 
                 fn read(&mut self) -> nb::Result<u8, Error> {
-                    let mut rx: Rx<pac::$USARTX> = Rx {
-                        _usart: PhantomData,
-                    };
+                    let mut rx = Rx::<pac::$USARTX>::new();
                     rx.read()
                 }
             }
@@ -482,37 +475,13 @@ macro_rules! hal {
                     // NOTE(unsafe) atomic read with no side effects
                     let isr = unsafe { (*pac::$USARTX::ptr()).isr.read() };
 
-                    // When receiving with parity enabled, MSB is the parity bit.
-                    // Mask it out.
-                    let cr1 = unsafe { (*pac::$USARTX::ptr()).cr1.read() };
-                    let (m1, m0) = (cr1.m1().bits(), cr1.m0().bits());
-
-                    let word_length_select = match (m1, m0) {
-                      (false, false) => WordLengthIncludingParity::Bits8,
-                      (false, true) => WordLengthIncludingParity::Bits9,
-                      (true, false) => WordLengthIncludingParity::Bits7,
-                      (true, true) => unreachable!(),
-                    };
-
-                    let parity_control_enable = cr1.pce().bits();
-                    let word_length = if parity_control_enable {
-                      match word_length_select {
-                        WordLengthIncludingParity::Bits9 => WordLength::Bits8,
-                        WordLengthIncludingParity::Bits8 => WordLength::Bits7,
-                        WordLengthIncludingParity::Bits7 => unimplemented!("6-bit word length is unsupported"),
-                      }
-                    } else {
-                      WordLength::Bits8
-                    };
-
-                    let parity_shift: u32 = match word_length {
-                      WordLength::Bits8 => 8,
-                      WordLength::Bits7 => 7,
-                    };
-
-                    let mask = ((1 << parity_shift) - 1) as u8;
-
                     if isr.rxne().bit_is_set() {
+                        let parity_shift: u32 = match self.word_length {
+                          WordLength::Bits8 => 8,
+                          WordLength::Bits7 => 7,
+                        };
+                        let mask = ((1 << parity_shift) - 1) as u8;
+
                         let rdr : u8 = unsafe { ptr::read_volatile(&(*pac::$USARTX::ptr()).rdr as *const _ as *const _)};
                         // NOTE(read_volatile) see `write_volatile` below
                         return Ok(rdr & mask);
@@ -610,6 +579,36 @@ macro_rules! hal {
             }
 
             impl Rx<pac::$USARTX> {
+                pub fn new() -> Self {
+                  // When receiving with parity enabled, MSB is the parity bit.
+                  // Mask it out.
+                  let cr1 = unsafe { (*pac::$USARTX::ptr()).cr1.read() };
+                  let (m1, m0) = (cr1.m1().bits(), cr1.m0().bits());
+
+                  let word_length_select = match (m1, m0) {
+                    (false, false) => WordLengthIncludingParity::Bits8,
+                    (false, true) => WordLengthIncludingParity::Bits9,
+                    (true, false) => WordLengthIncludingParity::Bits7,
+                    (true, true) => unreachable!(),
+                  };
+
+                  let parity_control_enable = cr1.pce().bits();
+                  let word_length = if parity_control_enable {
+                    match word_length_select {
+                      WordLengthIncludingParity::Bits9 => WordLength::Bits8,
+                      WordLengthIncludingParity::Bits8 => WordLength::Bits7,
+                      WordLengthIncludingParity::Bits7 => unimplemented!("6-bit word length is unsupported"),
+                    }
+                  } else {
+                    WordLength::Bits8
+                  };
+
+                  Rx {
+                    _usart: PhantomData,
+                    word_length,
+                  }
+                }
+
                 pub fn with_dma(self, channel: $dmarxch) -> $rxdma {
                     RxDma {
                         payload: self,
@@ -708,6 +707,12 @@ macro_rules! hal {
             }
 
             impl Tx<pac::$USARTX> {
+                pub fn new() -> Self {
+                  Tx {
+                    _usart: PhantomData,
+                  }
+                }
+
                 pub fn with_dma(self, channel: $dmatxch) -> $txdma {
                     TxDma {
                         payload: self,
